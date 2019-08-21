@@ -26,26 +26,24 @@ package org.jenkinsci.plugins.github_branch_source;
 import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
 import hudson.util.ListBoxModel;
+
+import java.io.IOException;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Set;
-import jenkins.scm.api.SCMHeadCategory;
-import jenkins.scm.api.SCMHeadOrigin;
-import jenkins.scm.api.SCMRevision;
-import jenkins.scm.api.SCMSource;
+
+import jenkins.scm.api.*;
 import jenkins.scm.api.mixin.ChangeRequestCheckoutStrategy;
+import jenkins.scm.api.mixin.ChangeRequestSCMHead;
 import jenkins.scm.api.mixin.ChangeRequestSCMHead2;
-import jenkins.scm.api.trait.SCMBuilder;
-import jenkins.scm.api.trait.SCMHeadAuthority;
-import jenkins.scm.api.trait.SCMHeadAuthorityDescriptor;
-import jenkins.scm.api.trait.SCMSourceContext;
-import jenkins.scm.api.trait.SCMSourceRequest;
-import jenkins.scm.api.trait.SCMSourceTrait;
-import jenkins.scm.api.trait.SCMSourceTraitDescriptor;
+import jenkins.scm.api.trait.*;
 import jenkins.scm.impl.ChangeRequestSCMHeadCategory;
 import jenkins.scm.impl.trait.Discovery;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
+import org.kohsuke.github.GHPullRequest;
+import org.kohsuke.github.GHPullRequestFileDetail;
+import org.kohsuke.github.GHRepository;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 /**
@@ -98,6 +96,7 @@ public class OriginPullRequestDiscoveryTrait extends SCMSourceTrait {
     public Set<ChangeRequestCheckoutStrategy> getStrategies() {
         switch (strategyId) {
             case 1:
+            case 4:
                 return EnumSet.of(ChangeRequestCheckoutStrategy.MERGE);
             case 2:
                 return EnumSet.of(ChangeRequestCheckoutStrategy.HEAD);
@@ -114,6 +113,9 @@ public class OriginPullRequestDiscoveryTrait extends SCMSourceTrait {
     @Override
     protected void decorateContext(SCMSourceContext<?, ?> context) {
         GitHubSCMSourceContext ctx = (GitHubSCMSourceContext) context;
+        if (strategyId == 4) {
+            ctx.withFilter(new ExcludeModifiedJenkinsfileSCMHeadFilter());
+        }
         ctx.wantOriginPRs(true);
         ctx.withAuthority(new OriginChangeRequestSCMHeadAuthority());
         ctx.withOriginPRStrategies(getStrategies());
@@ -168,6 +170,7 @@ public class OriginPullRequestDiscoveryTrait extends SCMSourceTrait {
             result.add(Messages.ForkPullRequestDiscoveryTrait_mergeOnly(), "1");
             result.add(Messages.ForkPullRequestDiscoveryTrait_headOnly(), "2");
             result.add(Messages.ForkPullRequestDiscoveryTrait_headAndMerge(), "3");
+            result.add(Messages.OriginPullRequestDiscoveryTrait_ExcludeModdedJenkins(), "4");
             return result;
         }
     }
@@ -205,6 +208,43 @@ public class OriginPullRequestDiscoveryTrait extends SCMSourceTrait {
             public boolean isApplicableToOrigin(@NonNull Class<? extends SCMHeadOrigin> originClass) {
                 return SCMHeadOrigin.Default.class.isAssignableFrom(originClass);
             }
+        }
+    }
+
+    /**
+     * Filter that excludes branches that are also filed as a pull request.
+     */
+
+    public static class ExcludeModifiedJenkinsfileSCMHeadFilter extends SCMHeadFilter {
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public boolean isExcluded(@NonNull SCMSourceRequest request, @NonNull SCMHead head) {
+            String user = "";
+            if (head instanceof PullRequestSCMHead && request instanceof GitHubSCMSourceRequest) {
+                for (GHPullRequest p : ((GitHubSCMSourceRequest) request).getPullRequests()) {
+                    String name = "PR-" + p.getNumber();
+                    try {
+                        user = p.getUser().getLogin();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+
+                    if (!(user.equals("sonarpp"))) {
+                        for (GHPullRequestFileDetail f : p.listFiles().asList()) {
+                            if (f.getFilename().equals("Jenkinsfile")
+                                    && ((f.getAdditions() > 0) || (f.getDeletions() > 0))
+                                    && name.equals(head.getName())) {
+
+                                System.out.println("Found Modded Jenkinsfile in PR");
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
         }
     }
 }
